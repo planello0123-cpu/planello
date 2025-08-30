@@ -79,7 +79,6 @@ const config = {
 // Validate required configuration
 const validateConfig = () => {
     const required = [
-        'mongoUri',
         'sendGrid.apiKey'
         // Removed SMS requirements since we have alternatives
     ];
@@ -1943,18 +1942,17 @@ app.post('/api/schedule', async (req, res) => {
             });
         }
         
-        // Normalize phone number
+        // Normalize phone to 91XXXXXXXXXX format
         const normalizedPhone = phone.replace(/\D/g, '').replace(/^0+/, '');
+        const phoneWithCountryCode = normalizedPhone.length === 10 ? `91${normalizedPhone}` : normalizedPhone;
         
         // Find user by any phone number format
         const user = await User.findOne({
             $or: [
-                { phone: phone },
-                { phone: normalizedPhone },
-                { phone: `91${normalizedPhone}` },
-                { phone: `+91${normalizedPhone}` },
-                { phone: normalizedPhone.replace(/^91/, '') },
-                { phone: `91${normalizedPhone.replace(/^91/, '')}` }
+                { phone: phoneWithCountryCode },
+                { phone: phoneWithCountryCode.replace(/^91/, '') },
+                { phone: `+${phoneWithCountryCode}` },
+                { phone: `+91${phoneWithCountryCode.replace(/^91/, '')}` }
             ]
         });
         
@@ -1966,16 +1964,34 @@ app.post('/api/schedule', async (req, res) => {
             });
         }
         
-        // Allow unverified users to save schedules (for development)
         if (!user.isVerified) {
-            console.log('User not verified, but allowing schedule save for development');
-            // Auto-verify the user
-            user.isVerified = true;
-            await user.save();
+            console.error('User not verified:', phone);
+            return res.status(403).json({
+                success: false,
+                message: 'Please verify your phone number before saving a schedule.'
+            });
         }
 
-        // Use the phone number from the found user
-        phone = user.phone;
+        // Remove all non-digit characters and leading z
+
+        // Ensure we have exactly 10 digits after removing non-digits
+        if (normalizedPhone.length !== 10) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid phone number. Must be exactly 10 digits (excluding country code)'
+            });
+        }
+
+        // Format as 91XXXXXXXXXX
+        phone = `91${normalizedPhone}`;
+
+        // Additional validation for the final format
+        if (!isValidPhoneNumber(phone)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid phone number format. Must be in 91XXXXXXXXXX format'
+            });
+        }
 
         console.log('Normalized phone number for schedule update:', phone);
 
@@ -2680,75 +2696,47 @@ cron.schedule('* * * * *', async () => {
                 console.log(`[${now.toISOString()}] Processing schedule in ${isNewFormat ? 'new' : 'legacy'} format`);
 
                 if (isNewFormat) {
-                    // New format processing - rows as objects with day, time, task
+                    // New format processing
                     schedule.rows.forEach((row, index) => {
-                        if (row && typeof row === 'object' && row.day) {
-                            const rowDay = (row.day || '').charAt(0).toUpperCase() + (row.day || '').slice(1).toLowerCase();
-                            console.log(`[${now.toISOString()}] Row ${index}:`, { rowDay, currentDay, matches: rowDay === currentDay, time: row.time, task: row.task });
+                        const rowDay = (row.day || '').charAt(0).toUpperCase() + (row.day || '').slice(1).toLowerCase();
+                        console.log(`[${now.toISOString()}] Row ${index}:`, { rowDay, currentDay, matches: rowDay === currentDay, time: row.time, task: row.task });
 
-                            if (rowDay === currentDay && row.time && row.task) {
-                                currentDayTasks.push({
-                                    time: row.time,
-                                    task: row.task
-                                });
-                            }
+                        if (rowDay === currentDay && row.time && row.task) {
+                            currentDayTasks.push({
+                                time: row.time,
+                                task: row.task
+                            });
                         }
                     });
                 } else if (schedule.headers && Array.isArray(schedule.headers) && schedule.rows.length > 0) {
-                    // Legacy format processing - rows as arrays
+                    // Legacy format processing - find current day's row
                     console.log(`[${now.toISOString()}] Processing legacy format schedule`);
 
-                    // Check if rows contain objects with day property (mixed format)
-                    const firstRow = schedule.rows[0];
-                    if (firstRow && Array.isArray(firstRow) && firstRow.length > 0 && typeof firstRow[0] === 'object' && firstRow[0].day) {
-                        console.log(`[${now.toISOString()}] Processing mixed format (array of objects)`);
-                        
-                        // Process each row that contains day objects
-                        schedule.rows.forEach((row, rowIndex) => {
-                            if (Array.isArray(row)) {
-                                row.forEach((item, colIndex) => {
-                                    if (item && typeof item === 'object' && item.day) {
-                                        const rowDay = (item.day || '').charAt(0).toUpperCase() + (item.day || '').slice(1).toLowerCase();
-                                        console.log(`[${now.toISOString()}] Row ${rowIndex}, Col ${colIndex}:`, { rowDay, currentDay, matches: rowDay === currentDay, time: item.time, task: item.task });
+                    schedule.rows.forEach((row, rowIndex) => {
+                        const rowDay = (row[0] || '').toString().trim();
+                        console.log(`[${now.toISOString()}] Row ${rowIndex}: ${rowDay}`);
+                    });
 
-                                        if (rowDay === currentDay && item.time && item.task) {
-                                            currentDayTasks.push({
-                                                time: item.time,
-                                                task: item.task
-                                            });
-                                        }
-                                    }
+                    const dayRow = schedule.rows.find(row => {
+                        const rowDay = (row[0] || '').toString().trim();
+                        return rowDay && rowDay.toLowerCase() === currentDay.toLowerCase();
+                    });
+
+                    if (dayRow) {
+                        console.log(`[${now.toISOString()}] Found row for ${currentDay}:`, dayRow);
+
+                        // Process each time column
+                        schedule.headers.forEach((time, colIndex) => {
+                            if (colIndex > 0 && dayRow[colIndex]) { // Skip day column and empty cells
+                                console.log(`[${now.toISOString()}] Adding task at ${time}: ${dayRow[colIndex]}`);
+                                currentDayTasks.push({
+                                    time: time,
+                                    task: dayRow[colIndex]
                                 });
                             }
                         });
                     } else {
-                        // Standard legacy format - rows as arrays with day names
-                        schedule.rows.forEach((row, rowIndex) => {
-                            const rowDay = (row[0] || '').toString().trim();
-                            console.log(`[${now.toISOString()}] Row ${rowIndex}: ${rowDay}`);
-                        });
-
-                        const dayRow = schedule.rows.find(row => {
-                            const rowDay = (row[0] || '').toString().trim();
-                            return rowDay && rowDay.toLowerCase() === currentDay.toLowerCase();
-                        });
-
-                        if (dayRow) {
-                            console.log(`[${now.toISOString()}] Found row for ${currentDay}:`, dayRow);
-
-                            // Process each time column
-                            schedule.headers.forEach((time, colIndex) => {
-                                if (colIndex > 0 && dayRow[colIndex]) { // Skip day column and empty cells
-                                    console.log(`[${now.toISOString()}] Adding task at ${time}: ${dayRow[colIndex]}`);
-                                    currentDayTasks.push({
-                                        time: time,
-                                        task: dayRow[colIndex]
-                                    });
-                                }
-                            });
-                        } else {
-                            console.log(`[${now.toISOString()}] No row found for ${currentDay}`);
-                        }
+                        console.log(`[${now.toISOString()}] No row found for ${currentDay}`);
                     }
                 }
 
