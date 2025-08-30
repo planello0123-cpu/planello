@@ -1943,17 +1943,18 @@ app.post('/api/schedule', async (req, res) => {
             });
         }
         
-        // Normalize phone to 91XXXXXXXXXX format
+        // Normalize phone number
         const normalizedPhone = phone.replace(/\D/g, '').replace(/^0+/, '');
-        const phoneWithCountryCode = normalizedPhone.length === 10 ? `91${normalizedPhone}` : normalizedPhone;
         
         // Find user by any phone number format
         const user = await User.findOne({
             $or: [
-                { phone: phoneWithCountryCode },
-                { phone: phoneWithCountryCode.replace(/^91/, '') },
-                { phone: `+${phoneWithCountryCode}` },
-                { phone: `+91${phoneWithCountryCode.replace(/^91/, '')}` }
+                { phone: phone },
+                { phone: normalizedPhone },
+                { phone: `91${normalizedPhone}` },
+                { phone: `+91${normalizedPhone}` },
+                { phone: normalizedPhone.replace(/^91/, '') },
+                { phone: `91${normalizedPhone.replace(/^91/, '')}` }
             ]
         });
         
@@ -1973,26 +1974,8 @@ app.post('/api/schedule', async (req, res) => {
             await user.save();
         }
 
-        // Remove all non-digit characters and leading z
-
-        // Ensure we have exactly 10 digits after removing non-digits
-        if (normalizedPhone.length !== 10) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid phone number. Must be exactly 10 digits (excluding country code)'
-            });
-        }
-
-        // Format as 91XXXXXXXXXX
-        phone = `91${normalizedPhone}`;
-
-        // Additional validation for the final format
-        if (!isValidPhoneNumber(phone)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid phone number format. Must be in 91XXXXXXXXXX format'
-            });
-        }
+        // Use the phone number from the found user
+        phone = user.phone;
 
         console.log('Normalized phone number for schedule update:', phone);
 
