@@ -1995,20 +1995,22 @@ app.post('/api/schedule', async (req, res) => {
             rows: []
         };
 
-        // Keep the original 2D array structure for compatibility
+        // Convert 2D array to array of objects with day, time, task
         if (Array.isArray(schedule.rows)) {
-            transformedSchedule.rows = schedule.rows.map(row => {
-                if (Array.isArray(row)) {
-                    return row.map(task => {
-                        if (typeof task === 'string') {
-                            return task.trim();
-                        } else if (task && typeof task === 'object' && task.task) {
-                            return task.task.trim();
-                        }
-                        return '';
-                    });
-                }
-                return [];
+            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+            transformedSchedule.rows = schedule.rows.flatMap((row, rowIndex) => {
+                const day = days[rowIndex];
+                if (!day) return [];
+
+                return row.map((task, colIndex) => {
+                    const time = transformedSchedule.headers[colIndex] || '';
+                    return {
+                        day,
+                        time,
+                        task: String(task || '').trim()
+                    };
+                }).filter(item => item.task); // Remove empty tasks
             });
         }
 
@@ -2694,20 +2696,26 @@ cron.schedule('* * * * *', async () => {
                     // Legacy format processing - find current day's row
                     console.log(`[${now.toISOString()}] Processing legacy format schedule`);
 
-                    // Get the current day's row index (0=Sunday, 1=Monday, ..., 6=Saturday)
-                    const dayIndex = now.getDay();
-                    const currentDayRow = schedule.rows[dayIndex];
+                    schedule.rows.forEach((row, rowIndex) => {
+                        const rowDay = (row[0] || '').toString().trim();
+                        console.log(`[${now.toISOString()}] Row ${rowIndex}: ${rowDay}`);
+                    });
 
-                    if (currentDayRow && Array.isArray(currentDayRow)) {
-                        console.log(`[${now.toISOString()}] Found row for ${currentDay}:`, currentDayRow);
-                        
-                        // Process each task in the current day's row
-                        currentDayRow.forEach((task, colIndex) => {
-                            if (task && task.toString().trim()) {
-                                const time = schedule.headers[colIndex] || '';
+                    const dayRow = schedule.rows.find(row => {
+                        const rowDay = (row[0] || '').toString().trim();
+                        return rowDay && rowDay.toLowerCase() === currentDay.toLowerCase();
+                    });
+
+                    if (dayRow) {
+                        console.log(`[${now.toISOString()}] Found row for ${currentDay}:`, dayRow);
+
+                        // Process each time column
+                        schedule.headers.forEach((time, colIndex) => {
+                            if (colIndex > 0 && dayRow[colIndex]) { // Skip day column and empty cells
+                                console.log(`[${now.toISOString()}] Adding task at ${time}: ${dayRow[colIndex]}`);
                                 currentDayTasks.push({
                                     time: time,
-                                    task: task.toString().trim()
+                                    task: dayRow[colIndex]
                                 });
                             }
                         });
